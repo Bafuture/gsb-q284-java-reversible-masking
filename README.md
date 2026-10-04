@@ -30,3 +30,45 @@ Pair-wise GSB 标注任务仓库（第 17 批 / 284）。
 1. 在本仓库中完成提示词要求的全部内容。
 2. `./mvnw -q verify` 必须通过。
 3. 完成后在所属分支（A 或 B）上提交，产物快照的父提交必须是初始环境快照。
+
+## 实现说明（B 分支）
+
+组件位于 `com.example.gsb.mask` 包下，核心类：
+
+| 类 | 职责 |
+|----|------|
+| `MaskingService` | 脱敏/还原入口，`mask(field, value)` 与 `unmask(field, token, authorization)` |
+| `Keyring` / `KeyVersion` | 版本化密钥环，轮换后历史版本保留用于还原老数据 |
+| `MappingVault` | 双向映射保险库（受信、不出库），负责一致性映射与碰撞检测 |
+| `Authorization` | 字段级 + 密钥版本级还原授权 |
+| `FormatType` | 格式保持：PHONE（纯数字定长）、ID_CARD（17 位数字 + 数字/X 末位）、GENERIC |
+| `TokenDeriver` / `HmacTokenDeriver` | 确定性令牌派生（HmacSHA256），可注入自定义实现 |
+| `CollisionPolicy` | 碰撞策略：REJECT（拒绝并报告）/ RETRY（换参数重试） |
+| `MaskingStats` | 统计：映射条数、还原次数、密钥版本数、碰撞数与碰撞明细 |
+
+### 用法示例
+
+```java
+Keyring keyring = Keyring.of("v1", "my-secret-key");
+MaskingService service = MaskingService.builder()
+        .keyring(keyring)
+        .field(FieldSpec.of("phone", FormatType.PHONE))
+        .field(FieldSpec.of("idCard", FormatType.ID_CARD))
+        .collisionPolicy(CollisionPolicy.REJECT)
+        .build();
+
+String masked = service.mask("phone", "13800138000");          // 定长数字，确定性
+String plain  = service.unmask("phone", masked,
+        Authorization.forFields("phone"));                     // 无授权抛 MaskingException
+
+keyring.rotate(KeyVersion.of("v2", "my-new-secret-key"));      // 轮换：新数据用 v2，老数据仍可还原
+```
+
+多个数据集（或同一进程内多个服务实例）共用同一个 `MappingVault`
+（`builder().sharedVault(vault)`）即可保证同一字段跨数据集映射一致。
+
+### 验证
+
+```bash
+mvn -q verify   # 11 个测试全部通过
+```
